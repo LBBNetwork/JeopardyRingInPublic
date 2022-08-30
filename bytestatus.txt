@@ -1,0 +1,11 @@
+player multithread byte statuses:
+
+1 - player rang in
+2 - add player to early ring-in penalty table
+3 - enabler is now active
+4 - enabler is inactive
+5 - clear penalty table
+6 - P1 ring-in success
+7 - P2 ring-in success
+8 - P3 ring-in success
+9 - (inside thread only) wait for enabler to go active and then activate penalty
