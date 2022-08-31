@@ -1,11 +1,15 @@
 player multithread byte statuses:
 
-1 - player rang in
-2 - add player to early ring-in penalty table
-3 - enabler is now active
-4 - enabler is inactive
-5 - clear penalty table
-6 - P1 ring-in success
-7 - P2 ring-in success
-8 - P3 ring-in success
-9 - (inside thread only) wait for enabler to go active and then activate penalty
+PXCmd -> indicates a command from main() that the PlayerXThread() needs to execute.
+PXResp -> indicates a response from the PlayerXThread() that main() needs to be aware of.
+
+PXCmd Listings:
+	2	Enable Early Ring-in Penalty
+	3	Enabler Active - Allow the player to respond
+	4	Enabler Inactive - Clear all statuses in the thread and cancel countdown lights
+	5	A player successfully rang in
+	7	We got locked out cause other player rang in ahead of us, sorry
+
+PXResp Listings:
+	1	Player Rang In - if the enabler is Inactive, send Cmd 2, otherwise wait for Resp 5 from the threads
+	6	Player Timed Out - self explanatory

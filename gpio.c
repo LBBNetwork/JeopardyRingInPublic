@@ -109,6 +109,20 @@ typedef struct SerData {
         int StatusByte;
 } SerData;
 
+typedef struct P1Data {
+	int P1Cmd;
+	int P1Resp;
+} P1Data;
+
+typedef struct P2Data {
+	int P2Byte;
+} P2Data;
+
+typedef struct P3Data {
+	int P3Byte;
+} P3Data;
+
+int ShowCountdown(int Player, int Second);
 int GetPlayerRingin(int PlayerInput, RPiGPIOPin playerLED);
 int TTLOpen();
 int TTLClose();
@@ -118,8 +132,11 @@ int TTLWrite();
 void ClearCountdownLights(int player);
 
 void *SerialThread(void *thread);
+void *Player1Thread(void *thread);
+void *Player2Thread(void *thread);
+void *Player3Thread(void *thread);
 
-void InterruptDelay(int milliseconds, bool selftest, SerData dataread);
+void InterruptDelay(int milliseconds, bool selftest);
 void CheckIfRoot();
 void CleanupAndClose();
 
@@ -146,13 +163,18 @@ int main()
 	SerData *DataReadPtr = malloc(sizeof(SerData));
 	SerData DataRead;
 
+	pthread_t p1;
+	P1Data *P1ReadPtr = malloc(sizeof(P1Data));
+	P1Data P1DataRead;
+
 	/* Check if current UID is the ROOT_UID */
 	CheckIfRoot();
 
+	/* if we fail to init gpio, terminate */
         if(!bcm2835_init())
                 return 1;
 
-	InterruptDelay(750, true, DataRead);
+	InterruptDelay(750, true);
 
         /* Set up the GPIO pins for input */
 	printf("main(): Setting up GPIO input... ");
@@ -178,24 +200,24 @@ int main()
 	printf("P1_LED ");
         bcm2835_gpio_fsel(P1_LED, BCM2835_GPIO_FSEL_OUTP);
 	bcm2835_gpio_write(P1_LED, HIGH);
-	InterruptDelay(750, true, DataRead);
+	InterruptDelay(750, true);
 	bcm2835_gpio_write(P1_LED, LOW);
 
 	printf("P2_LED ");
 	bcm2835_gpio_fsel(P2_LED, BCM2835_GPIO_FSEL_OUTP);
 	bcm2835_gpio_write(P2_LED, HIGH);
-	InterruptDelay(750, true, DataRead);
+	InterruptDelay(750, true);
 	bcm2835_gpio_write(P2_LED, LOW);
 
 	printf("P3_LED ");
         bcm2835_gpio_fsel(P3_LED, BCM2835_GPIO_FSEL_OUTP);
 	bcm2835_gpio_write(P3_LED, HIGH);
-	InterruptDelay(750, true, DataRead);
+	InterruptDelay(750, true);
 	bcm2835_gpio_write(P3_LED, LOW);
 
 	printf("LOCKOUT_ASSERT ");
 	bcm2835_gpio_fsel(LOCKOUT_ASSERT, BCM2835_GPIO_FSEL_OUTP);
-	InterruptDelay(750, true, DataRead);
+	InterruptDelay(750, true);
 
 	printf("- OK\n");
 
@@ -216,19 +238,19 @@ int main()
 	printf("P1_ENABLE ");
 	bcm2835_gpio_fsel(P1_ENABLE, BCM2835_GPIO_FSEL_OUTP);
 	bcm2835_gpio_write(P1_ENABLE, HIGH);
-	InterruptDelay(750, true, DataRead);
+	InterruptDelay(750, true);
 	bcm2835_gpio_write(P1_ENABLE, LOW);
 
 	printf("P2_ENABLE ");
 	bcm2835_gpio_fsel(P2_ENABLE, BCM2835_GPIO_FSEL_OUTP);
 	bcm2835_gpio_write(P2_ENABLE, HIGH);
-	InterruptDelay(750, true, DataRead);
+	InterruptDelay(750, true);
 	bcm2835_gpio_write(P2_ENABLE, LOW);
 
 	printf("P3_ENABLE ");
 	bcm2835_gpio_fsel(P3_ENABLE, BCM2835_GPIO_FSEL_OUTP);
 	bcm2835_gpio_write(P3_ENABLE, HIGH);
-	InterruptDelay(750, true, DataRead);
+	InterruptDelay(750, true);
 	bcm2835_gpio_write(P3_ENABLE, LOW);
 
 	bcm2835_gpio_write(TIME_1, LOW);
@@ -241,23 +263,21 @@ int main()
 
 
 	printf("main(): Starting serial port thread...\n");
-	//DataRead->StatusByte = 1;
-	DataRead.StatusByte = 420;
 	pthread_create(&ser, NULL, SerialThread, DataReadPtr);
 
-	printf("main(): SerialThread spawned. Waiting for thread to complete spawning...\n");
-	InterruptDelay(5000, true, DataRead);
+	printf("main(): Starting Player 1 input thread...\n");
+	pthread_create(&p1, NULL, Player1Thread, P1ReadPtr);
+
+	printf("main(): Waiting for other threads to complete spawning...\n");
+	InterruptDelay(5000, true);
 
 	printf("main(): Sanity check: Read StatusByte from SerialThread, should be 1337: %d\n", DataReadPtr->StatusByte);
+	printf("main(): Sanity check: Read P1Cmd from Player1Thread, should be 1337: %d\n", P1ReadPtr->P1Cmd);
+	printf("main(): Sanity check: Read P1Resp from Player1Thread, should be 420: %d\n", P1ReadPtr->P1Resp);
 
 	printf("\amain(): !!! MAKE SURE YOU TEST PLAYER INPUTS BEFORE STARTING GAME !!!\n\nmain(): Good luck - here we go, into the Jeopardy round...\n\n");
 
 	printf("main(): debug: using interval %d as divisor for InterruptDelay(). Change MS_DIVISOR to change sampling rate.\n\n", MS_DIVISOR); 
-
-	//printf("main(): this will probably crash; freeing DataRead\n");
-	//free(DataRead);
-
-	printf("main(): DataRead.StatusByte is %d\n", DataRead.StatusByte);
 
 	while(1)
         {
@@ -267,74 +287,78 @@ int main()
                 P2Lockout = 0;
                 P3Lockout = 0;
 
-                lockout = 0;//bcm2835_gpio_lev(ENABLER);
+                lockout = bcm2835_gpio_lev(INPUT3); //temporarily use player 3's input test button while I test this program
+
+//		printf("main(): lockout current status: %d\n", lockout);
+
+		switch(lockout)
+		{
+			case 0: //Enabler Switch is Active (player showtime!)
+				bcm2835_gpio_write(P3_LED, HIGH);
+
+				//InterruptDelay(250, false); //software debounce
+				//if(lockout == 0)
+				//{
+					P1ReadPtr->P1Cmd = 3;
+
+				//	if(P1ReadPtr->P1Resp == 1) //Player 1 thread reported ring-in!
+				//	{
+						//P1ReadPtr->P1Cmd = 5; //Tell Player 1 thread that it's safe to start ringing in now
+				//	}
+				//}
+
+				break;
+			case 1: //Enabler Switch is Inactive (penalize early ring-in)
+				bcm2835_gpio_write(P3_LED, LOW);
+
+				//also, send the lockout cmd to the player threads
+				P1ReadPtr->P1Cmd = 4;
+
+				//check to see if the player rang-in early, if so penalize them
+				//if(P1ReadPtr->P1Resp == 1)
+				//{
+					//P1ReadPtr->P1Cmd == 2;
+				//}
+
+
+
+				break;
+			default:
+				break;
+		}
+
+
                 //bcm2835_gpio_write(ENABLER_LED, LOW);
 
+		/* bcm2835 returns 1 when digital input is not triggered,
+		   so this code will execute when the Enabler is inactive */
+		//while(lockout)
+		//{
+			/* In this block we'll punish players for ringing in too early with a 1/4 second
+			   early ring-in penalty. */
+
+			//P1ReadPtr->P1Byte = 4;
+		//	if(P1ReadPtr->P1Byte == 1)
+		//	{
+				// Enforce early ring-in penalty
+		//		P1ReadPtr->P1Byte == 2;
+		//	}
+
+			//bcm2835_gpio_write(P3_LED, LOW);
+
+		//}
+
                 /* bcm2835 returns 0 when a digital input is triggered,
-                   so we only enter the loop when the DI is 0 */
-                while(!lockout)
-                {
-                        value1 = bcm2835_gpio_lev(INPUT1);
-                        value2 = bcm2835_gpio_lev(INPUT2);
-                        value3 = bcm2835_gpio_lev(INPUT3);
-                        lockout = 0;//bcm2835_gpio_lev(ENABLER);
+		   so this code gets executed when the Enabler is active */
+                //while(!lockout)
+                //{
+                        //value3 = bcm2835_gpio_lev(INPUT3);
+			/* Write the new code to handle multithreaded player input here. */
 
-			printf("main(): DataRead.StatusByte is %d\n", DataRead.StatusByte);
-			printf("main(): DataReadPtr->StatusByte is %d\n", DataReadPtr->StatusByte);
-			InterruptDelay(10, false, DataRead);
+			//P1ReadPtr->P1Byte = 3;
 
-			DataRead.StatusByte = DataReadPtr->StatusByte;
-
-			printf("main(): DataRead.StatusByte = DataReadPtr->StatusByte is now %d\n", DataRead.StatusByte);
-
-			//DataRead.StatusByte = DataReadPtr->StatusByte;
-
-                        /* Toggle the Enabler LED on so the operator knows
-                           when inputs are being recieved; we can run
-                           headless this way */
-                        //bcm2835_gpio_write(ENABLER_LED, HIGH);
-
-                        /*if(value1 == 0)
-			{
-                                if(P1Lockout == 0)
-                                {
-                                        printf("main(): sending data 1 to StatusByte\n");
-					DataReadPtr->StatusByte = 49;
-					P1Lockout = GetPlayerRingin(1, P1_LED);
-
-					printf("main(): sending data 4 to StatusByte\n");
-					DataReadPtr->StatusByte = 52;
-                                }
-                                else
-                                {
-                                        printf("main(): P1 already rung in\n");
-                                }
-                        }
-
-                        if(value2 == 0)
-                        {
-                                if(P2Lockout == 0)
-                                {
-                                        P2Lockout = GetPlayerRingin(2, P2_LED);
-                                }
-                                else
-                                {
-                                        printf("main(): P2 already rung in\n");
-                                }
-                        }
-
-                        if(value3 == 0)
-                        {
-                                if(P3Lockout == 0)
-                                {
-                                        P3Lockout = GetPlayerRingin(3, P3_LED);
-				}
-                                else
-                                {
-                                        printf("main(): P3 already rung in\n");
-                                }
-                        }*/
-                }
+		//	bcm2835_gpio_write(P3_LED, HIGH);
+                //}
         }
 
 	printf("main(): freeing pointer to SerialThread->DataReadPtr\n");
@@ -374,16 +398,70 @@ int TTLRead()
 	return 0;
 }
 
+int ShowCountdown(int Player, int Second)
+{
+	/* This function supersedes GetPlayerRingIn() as it's more generalized to enable the multi-thread expansion.
+	   Still does pretty much the same thing though; sets the appropriate player LED(s) high to show a countdown feature.*/
+
+#ifdef MODEL_AB
+	/* I might drop support for the old 26-pin devices... */
+#endif
+#ifdef MODEL_BPLUS
+	printf("ShowCountdown(): Showing countdown for Player %d, Second %d\n", Player, Second);
+
+	switch(Player)
+	{
+		case 1:
+			bcm2835_gpio_write(P1_ENABLE, HIGH);
+			break;
+		case 2:
+			bcm2835_gpio_write(P2_ENABLE, HIGH);
+			break;
+		case 3:
+			bcm2835_gpio_write(P3_ENABLE, HIGH);
+			break;
+		default:
+			printf("ShowCountdown(): WARNING: Tried to enable unknown Player %d\n", Player);
+			break;
+	}
+
+	switch(Second)
+	{
+		case 5:
+			bcm2835_gpio_write(TIME_1, HIGH);
+			bcm2835_gpio_write(TIME_2, HIGH);
+			bcm2835_gpio_write(TIME_3, HIGH);
+			bcm2835_gpio_write(TIME_4, HIGH);
+			bcm2835_gpio_write(TIME_5, HIGH);
+			break;
+		case 4:
+			bcm2835_gpio_write(TIME_5, LOW);
+			break;
+		case 3:
+			bcm2835_gpio_write(TIME_4, LOW);
+			break;
+		case 2:
+			bcm2835_gpio_write(TIME_3, LOW);
+			break;
+		case 1:
+			bcm2835_gpio_write(TIME_2, LOW);
+			break;
+		case 0:
+			bcm2835_gpio_write(TIME_1, LOW);
+			bcm2835_gpio_write(TIME_4, LOW);
+			bcm2835_gpio_write(TIME_3, LOW);
+			bcm2835_gpio_write(TIME_2, LOW);
+			bcm2835_gpio_write(TIME_5, LOW);
+			break;
+		default:
+			printf("ShowCountdown(): Unknown Second %d\n", Second);
+			break;
+	}
+#endif
+}
+
 int GetPlayerRingin(int PlayerInput, RPiGPIOPin playerLED)
 {
-	//SerData *DataRead = malloc(sizeof(SerData));
-	//int EarlyTimerCancel = 0;
-	SerData Whatever;
-
-	Whatever.StatusByte = 6969;
-
-	printf("GetPlayerRingin(): StatusByte is %d\n", Whatever.StatusByte);
-
         /* Return value of 1 is stored in the lockout ints in main()
            so we can lock a player out until the Enabler is turned on
            again */
@@ -393,7 +471,7 @@ int GetPlayerRingin(int PlayerInput, RPiGPIOPin playerLED)
 	/* Use the old single-LED indicator logic for 26-pin devices. */
 	bcm2835_gpio_write(LOCKOUT_ASSERT, HIGH);
 	bcm2835_gpio_write(playerLED, HIGH);
-	InterruptDelay(5000, false, Whatever);
+	InterruptDelay(5000, false);
 	bcm2835_gpio_write(LOCKOUT_ASSERT, LOW);
 	bcm2835_gpio_write(playerLED, LOW);
 #endif
@@ -424,22 +502,22 @@ int GetPlayerRingin(int PlayerInput, RPiGPIOPin playerLED)
 	bcm2835_gpio_write(TIME_3, HIGH);
 	bcm2835_gpio_write(TIME_4, HIGH);
 	bcm2835_gpio_write(TIME_5, HIGH);	/* O O O O O O O O O */
-	InterruptDelay(1000, false, Whatever);
+	InterruptDelay(1000, false);
 
 	bcm2835_gpio_write(TIME_5, LOW);	/* - O O O O O O O - */
-	InterruptDelay(1000, false, Whatever);
+	InterruptDelay(1000, false);
 
 	bcm2835_gpio_write(TIME_4, LOW);	/* - - O O O O O - - */
-	InterruptDelay(1000, false, Whatever);
+	InterruptDelay(1000, false);
 
 	bcm2835_gpio_write(TIME_3, LOW);	/* - - - O O O - - - */
-	InterruptDelay(1000, false, Whatever);
+	InterruptDelay(1000, false);
 
 	bcm2835_gpio_write(TIME_2, LOW);	/* - - - - O - - - - */
-	InterruptDelay(1000, false, Whatever);
+	InterruptDelay(1000, false);
 
 	bcm2835_gpio_write(TIME_1, LOW);	/* - - - - - - - - - */
-	InterruptDelay(1000, false, Whatever);
+	InterruptDelay(1000, false);
 
 	/* Switch one more time to make sure you disable the player enable */
 	switch(PlayerInput)
@@ -667,39 +745,116 @@ void *SerialThread(void *thread)
 			}
 		}
 	}
-
-	/*while(1)
-	{
-		//printf("countval: %d | statusbyte: %d\n", countval, statbyte->StatusByte);
-
-		countval++;
-		statbyte->StatusByte = countval;
-
-		if(countval > 200000)
-		{
-			countval = 10;
-			statbyte->StatusByte = countval;
-		}
-
-		/*switch(countval)
-		{
-			case 200000:
-			{
-				countval = 10;
-				statbyte->StatusByte = countval;
-				break;
-			}
-			defaut:
-			{
-				countval++;
-				statbyte->StatusByte = countval;
-				break;
-			}
-		}*
-	}*/
 }
 
-void InterruptDelay(int milliseconds, bool selftest, SerData dataread)
+void *Player1Thread(void *thread)
+{
+	P1Data *p1b=(P1Data *)thread;
+	p1b->P1Cmd = 1337;
+	p1b->P1Resp = 420;
+
+	int EarlyPenalty = 0; // variable to hold if this player is subject to an early ring-in penalty
+	int LastMsg = 0;
+	int Enabled = 0;
+	int Lockout = 0;
+
+	uint8_t Player1Button = 0;
+
+	printf("Player1Thread(): Welcome to P1Thread, entering loop\n");
+	while(1)
+	{
+		Player1Button = bcm2835_gpio_lev(INPUT1);
+		if(Player1Button == 0) // Player Button was pressed
+		{
+			//printf("Player1Thread(): debug: EarlyPenalty == %d, Lockout == %d, LastMsg == %d\n", EarlyPenalty,Lockout,LastMsg);
+
+			p1b->P1Resp = 1; //tell main() that we got a response!
+
+			if(Enabled != 1) //Enabler is Disabled, we are not safe to ring in
+			{
+				if(EarlyPenalty == 0)
+				{
+					printf("Player1Thread(): P1 rang in unsafe; penalizing (EP: %d, LO: %d, LM: %d, CM: %d)\n",EarlyPenalty, Lockout, LastMsg,p1b->P1Cmd);
+					EarlyPenalty = 1;
+				}
+			}
+			else //Enabler is Enabled, now it is safe to ring in
+			{
+				if(EarlyPenalty == 0 && Lockout != 1 /*&& p1b->P1Cmd == 5*/) //Make sure we're not enforcing the early ring-in penalty,
+				{						      //that we're not locked out, and that main() has cleared
+					// do the countdown logic here		      //us to ring in!
+					ShowCountdown(1, 5);
+					InterruptDelay(1000, false);
+
+					ShowCountdown(1, 4);
+					InterruptDelay(1000, false);
+
+					ShowCountdown(1, 3);
+					InterruptDelay(1000, false);
+
+					ShowCountdown(1, 2);
+					InterruptDelay(1000, false);
+
+					ShowCountdown(1, 1);
+					InterruptDelay(1000, false);
+
+					ShowCountdown(1, 0);
+
+					Lockout = 1;
+					p1b-P1Resp = 6; //send message back to main() saying that we timed out
+				}
+				else if(EarlyPenalty == 1) //Early penalty enforced
+				{
+					//do the penalty logic here
+					printf("Player1Thread(): Enforcing penalty!(EP: %d, LO: %d, LM: %d, CM: %d)\n",EarlyPenalty, Lockout, LastMsg,p1b->P1Cmd);
+					InterruptDelay(250, false);
+					EarlyPenalty = 0;
+					printf("Player1Thread(): Penalty CLEAR! (EP: %d, LO: %d, LM: %d, CM: %d)\n",EarlyPenalty, Lockout, LastMsg,p1b->P1Cmd);
+				}
+			}
+
+		}
+
+		/* Process commands send to us from main() */
+		if(LastMsg != p1b->P1Cmd)
+		{
+			printf("Player1Thread(): Got new data - (EP: %d, LO: %d, LM: %d, CM: %d)\n",EarlyPenalty, Lockout, LastMsg,p1b->P1Cmd);
+			switch(p1b->P1Cmd)
+			{
+				case 2:
+					printf("Player1Thread(): OK, adding to penalty table (EP: %d, LO: %d, LM: %d, CM: %d)\n",EarlyPenalty, Lockout, LastMsg,p1b->P1Cmd);
+					EarlyPenalty = 1;
+					break;
+				case 3:
+					printf("Player1Thread(): Enabling player input (EP: %d, LO: %d, LM: %d, CM: %d)\n",EarlyPenalty, Lockout, LastMsg,p1b->P1Cmd);
+					Enabled = 1;
+					Lockout = 0;
+					break;
+				case 4:
+					printf("Player1Thread(): Disabling player input(EP: %d, LO: %d, LM: %d, CM: %d)\n",EarlyPenalty, Lockout, LastMsg,p1b->P1Cmd);
+					Enabled = 0;
+					Lockout = 0;
+					EarlyPenalty = 0;
+					break;
+				case 5:
+					printf("Player1Thread(): We got the ring-in! (EP: %d, LO: %d, LM: %d, CM: %d)\n",EarlyPenalty, Lockout, LastMsg,p1b->P1Cmd);
+					break;
+				case 7:
+					printf("Player1Thread(): Another player won, better luck next time (EP: %d, LO: %d, LM: %d, CM: %d)\n",EarlyPenalty, Lockout, LastMsg,p1b->P1Cmd);
+					Lockout = 1;
+					break;
+				default:
+					break;
+			}
+
+			LastMsg = p1b->P1Cmd;
+		}
+
+	}
+}
+
+
+void InterruptDelay(int milliseconds, bool selftest)
 {
         /* This function exists so the operator can cancel a player's
            input without having to wait for the timer to expire. This
@@ -721,29 +876,6 @@ void InterruptDelay(int milliseconds, bool selftest, SerData dataread)
                         printf("InterruptDelay(): Ending countdown - Lockout switch was pressed\n");
                         break;
                 }
-		else
-		{
-			if(selftest == false)
-			{
-				switch(dataread.StatusByte)
-				{
-					case 7:
-						break;
-					case 8:
-						break;
-					case 9:
-						break;
-					default:
-						break;
-				}
-
-				if(dataread.StatusByte != 0)
-				{
-					printf("InterruptDelay(): Ending countdown - Recieved data %d on StatusByte\n", dataread.StatusByte);
-					break;
-				}
-			}
-		}
         }
 
 	return 0;
